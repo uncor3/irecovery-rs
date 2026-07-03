@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use futures_core::Stream;
 use nusb::hotplug::{HotplugEvent, HotplugWatch};
+use nusb::transfer::{ControlOut, ControlType, Recipient};
 use nusb::{Device, DeviceId, DeviceInfo as UsbDeviceInfo, Interface, MaybeFuture};
 use thiserror::Error;
 
@@ -30,6 +31,7 @@ pub mod db;
 const APPLE_VENDOR_ID: u16 = 0x05ac;
 const DEFAULT_INTERFACE: u8 = 0;
 const DESCRIPTOR_TIMEOUT: Duration = Duration::from_secs(10);
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 const RETRY_DELAY: Duration = Duration::from_millis(500);
 const ENGLISH_US: u16 = 0x0409;
 
@@ -43,6 +45,8 @@ pub enum RecoveryError {
     Usb(#[from] nusb::Error),
     #[error("USB descriptor read failed: {0}")]
     Descriptor(#[from] nusb::GetDescriptorError),
+    #[error("USB transfer failed: {0}")]
+    Transfer(#[from] nusb::transfer::TransferError),
     #[error(
         "device is not an Apple recovery-family USB device: vid={vendor_id:#06x} pid={product_id:#06x}"
     )]
@@ -51,6 +55,12 @@ pub enum RecoveryError {
     NoMatchingDevice { ecid: u64, attempts: usize },
     #[error("device did not expose a parseable iBoot descriptor string")]
     MissingDeviceInfo,
+    #[error("recovery command is too long: {length} bytes, maximum is 255")]
+    CommandTooLong { length: usize },
+    #[error("recovery command contains a NUL byte")]
+    CommandContainsNul,
+    #[error("environment variable name is empty or contains whitespace/NUL: {0}")]
+    InvalidEnvironmentVariable(String),
     #[error("invalid descriptor field {field}: {value}")]
     InvalidDescriptorField { field: &'static str, value: String },
     #[error("unsupported platform behavior: {0}")]
@@ -245,6 +255,62 @@ impl RecoveryClient {
     pub fn interface(&self) -> &Interface {
         &self.interface
     }
+
+    /// Send a raw iBoot command with a custom USB request value.
+    pub fn send_command_raw(&self, command: &str, b_request: u8) -> Result<()> {
+        let payload = command_payload(command)?;
+        if payload.is_empty() {
+            return Ok(());
+        }
+
+        self.interface
+            .control_out(
+                ControlOut {
+                    control_type: ControlType::Vendor,
+                    recipient: Recipient::Device,
+                    request: b_request,
+                    value: 0,
+                    index: 0,
+                    data: &payload,
+                },
+                COMMAND_TIMEOUT,
+            )
+            .wait()?;
+
+        Ok(())
+    }
+
+    /// Send a normal iBoot command using USB request `0`.
+    pub fn send_command(&self, command: &str) -> Result<()> {
+        self.send_command_raw(command, 0)
+    }
+
+    /// Set an iBoot environment variable.
+    pub fn setenv(&self, variable: &str, value: &str) -> Result<()> {
+        validate_env_variable(variable)?;
+        if value.as_bytes().contains(&0) {
+            return Err(RecoveryError::CommandContainsNul);
+        }
+
+        self.send_command(&format!("setenv {variable} {value}"))
+    }
+
+    /// Save iBoot environment variables.
+    pub fn saveenv(&self) -> Result<()> {
+        self.send_command("saveenv")
+    }
+
+    /// Ask the recovery device to reboot.
+    pub fn reboot(&self) -> Result<()> {
+        self.send_command("reboot")
+    }
+
+    /// Set `auto-boot=true`, save the environment, and reboot.
+    pub fn set_auto_boot_and_reboot(&self) -> Result<()> {
+        self.setenv("auto-boot", "true")?;
+        self.saveenv()?;
+        self.reboot()
+    }
 }
 
 /// Convenient owned result equivalent to a successful initialization call.
@@ -429,6 +495,12 @@ pub fn init_recovery_device_with_metadata(
     init_recovery_device_with_optional_metadata(ecid, attempts, Some(metadata_resolver))
 }
 
+/// Open a recovery device by ECID, set `auto-boot=true`, save env, and reboot.
+pub fn set_auto_boot_and_reboot(ecid: u64, attempts: usize) -> Result<()> {
+    let client = open_by_ecid(ecid, attempts)?;
+    client.set_auto_boot_and_reboot()
+}
+
 fn init_recovery_device_with_optional_metadata(
     ecid: u64,
     attempts: usize,
@@ -594,6 +666,38 @@ fn parse_bracketed(input: &str, key: &str) -> Option<String> {
     Some(rest[..end].to_owned())
 }
 
+fn command_payload(command: &str) -> Result<Vec<u8>> {
+    let length = command.len();
+    if length >= 0x100 {
+        return Err(RecoveryError::CommandTooLong { length });
+    }
+    if command.as_bytes().contains(&0) {
+        return Err(RecoveryError::CommandContainsNul);
+    }
+    if command.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut payload = Vec::with_capacity(length + 1);
+    payload.extend_from_slice(command.as_bytes());
+    payload.push(0);
+    Ok(payload)
+}
+
+fn validate_env_variable(variable: &str) -> Result<()> {
+    if variable.is_empty()
+        || variable
+            .bytes()
+            .any(|byte| byte == 0 || byte.is_ascii_whitespace())
+    {
+        return Err(RecoveryError::InvalidEnvironmentVariable(
+            variable.to_owned(),
+        ));
+    }
+
+    Ok(())
+}
+
 #[cfg(feature = "bundled-db")]
 impl DeviceMetadataResolver for &[db::DeviceDatabaseInfo] {
     fn resolve(&self, info: &RecoveryDeviceInfo) -> Option<DeviceMetadata> {
@@ -741,6 +845,46 @@ mod tests {
 
         assert_eq!(info.srnm.as_deref(), Some("ABC 123"));
         assert_eq!(info.srtg.as_deref(), Some("d22ap"));
+    }
+
+    #[test]
+    fn command_payload_is_nul_terminated() {
+        assert_eq!(command_payload("reboot").unwrap(), b"reboot\0");
+        assert_eq!(command_payload("").unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn command_payload_rejects_long_commands() {
+        let error = command_payload(&"x".repeat(0x100)).unwrap_err();
+
+        assert!(matches!(
+            error,
+            RecoveryError::CommandTooLong { length: 256 }
+        ));
+    }
+
+    #[test]
+    fn command_payload_rejects_nul_bytes() {
+        let error = command_payload("setenv x\0y").unwrap_err();
+
+        assert!(matches!(error, RecoveryError::CommandContainsNul));
+    }
+
+    #[test]
+    fn env_variable_validation_rejects_bad_names() {
+        assert!(validate_env_variable("auto-boot").is_ok());
+        assert!(matches!(
+            validate_env_variable(""),
+            Err(RecoveryError::InvalidEnvironmentVariable(_))
+        ));
+        assert!(matches!(
+            validate_env_variable("auto boot"),
+            Err(RecoveryError::InvalidEnvironmentVariable(_))
+        ));
+        assert!(matches!(
+            validate_env_variable("auto\0boot"),
+            Err(RecoveryError::InvalidEnvironmentVariable(_))
+        ));
     }
 
     #[cfg(feature = "bundled-db")]
