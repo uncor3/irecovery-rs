@@ -47,9 +47,114 @@ cargo run --features bundled-db --bin watch_recovery
 Without this feature, device discovery still works, but unresolved names are
 reported as `Unknown Device`.
 
-## Example
+## Examples
 
-Watch recovery-device events:
+Watch recovery-device events from a Tokio runtime:
+
+```toml
+irecovery = { version = "0.2", features = ["tokio"] }
+futures-lite = "2"
+tokio = { version = "1", features = ["rt"] }
+```
+
+```rust
+use std::{error::Error, sync::LazyLock};
+
+use futures_lite::StreamExt;
+
+static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("failed to build Tokio runtime")
+});
+
+fn main() -> Result<(), Box<dyn Error>> {
+    RUNTIME.block_on(async move {
+        let mut events = match irecovery::watch_recovery_devices().await {
+            Ok(events) => Box::pin(events),
+            Err(err) => {
+                eprintln!("failed to watch recovery devices: {err}");
+                return;
+            }
+        };
+
+        while let Some(event) = events.as_mut().next().await {
+            match event {
+                Ok(irecovery::RecoveryEvent::Connected(device)) => {
+                    eprintln!(
+                        "recovery device connected: id={:?} mode={:?} ecid={:?} model={} name={}",
+                        device.id,
+                        device.mode,
+                        device.ecid,
+                        device.hardware_model().unwrap_or("unknown"),
+                        device.display_name(),
+                    );
+                }
+                Ok(irecovery::RecoveryEvent::Disconnected(id)) => {
+                    eprintln!("recovery device disconnected: id={id:?}");
+                }
+                Err(err) => {
+                    eprintln!("recovery device watch error: {err}");
+                }
+            }
+        }
+    });
+
+    Ok(())
+}
+```
+
+Watch recovery-device events without Tokio by blocking the current thread:
+
+```rust
+use std::error::Error;
+
+use futures_lite::{future, StreamExt};
+use irecovery::{MaybeFuture, RecoveryEvent};
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let mut events = Box::pin(irecovery::watch_recovery_devices().wait()?);
+
+    loop {
+        match future::block_on(events.as_mut().next()) {
+            Some(Ok(RecoveryEvent::Connected(device))) => {
+                println!(
+                    "recovery device connected: id={:?} mode={:?} ecid={:?} model={} name={}",
+                    device.id,
+                    device.mode,
+                    device.ecid,
+                    device.hardware_model().unwrap_or("unknown"),
+                    device.display_name(),
+                );
+            }
+            Some(Ok(RecoveryEvent::Disconnected(id))) => {
+                println!("recovery device disconnected: id={id:?}");
+            }
+            Some(Err(err)) => {
+                eprintln!("recovery device watch error: {err}");
+            }
+            None => break,
+        }
+    }
+
+    Ok(())
+}
+```
+
+
+```rust
+use irecovery::{MaybeFuture, Result, open_by_ecid};
+
+fn main() -> Result<()> {
+    let client = open_by_ecid(0x1234_5678_9abc_def0, 10).wait()?;
+    client.setenv("auto-boot", "true")?;
+    client.saveenv()?;
+    client.reboot()?;
+    Ok(())
+}
+```
+
+To watch recovery-device events, git clone the repo and run 
 
 ```bash
 cargo run --bin watch_recovery
@@ -59,18 +164,4 @@ Exit recovery mode on the first detected device with an ECID:
 
 ```bash
 cargo run --bin exit_recovery
-```
-
-Use the library:
-
-```rust
-use irecovery::{open_by_ecid, Result};
-
-fn main() -> Result<()> {
-    let client = open_by_ecid(0x1234_5678_9abc_def0, 10)?;
-    client.setenv("auto-boot", "true")?;
-    client.saveenv()?;
-    client.reboot()?;
-    Ok(())
-}
 ```
