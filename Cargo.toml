@@ -11,10 +11,13 @@ authors = ["uncor3 <github.com/uncor3>"]
 [features]
 default = []
 bundled-db = []
-tokio = ["nusb/tokio"]
+smol = ["dep:blocking", "nusb/smol"]
+tokio = ["dep:tokio", "nusb/tokio"]
 
 [dependencies]
+blocking = { version = "1", optional = true }
 futures-core = "0.3"
 futures-lite = "2"
 nusb = "0.2.4"
 thiserror = "2"
+tokio = { version = "1", features = ["rt"], optional = true }

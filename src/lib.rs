@@ -20,13 +20,18 @@ use std::thread;
 use std::time::Duration;
 
 use futures_core::Stream;
+use maybe_future::{Ready, blocking::Blocking};
 use nusb::hotplug::{HotplugEvent, HotplugWatch};
 use nusb::transfer::{ControlOut, ControlType, Recipient};
-use nusb::{Device, DeviceId, DeviceInfo as UsbDeviceInfo, Interface, MaybeFuture};
+use nusb::{
+    Device, DeviceId, DeviceInfo as UsbDeviceInfo, Interface, MaybeFuture as NusbMaybeFuture,
+};
 use thiserror::Error;
 
 #[cfg(feature = "bundled-db")]
 pub mod db;
+mod maybe_future;
+pub use maybe_future::MaybeFuture;
 
 const APPLE_VENDOR_ID: u16 = 0x05ac;
 const DEFAULT_INTERFACE: u8 = 0;
@@ -167,7 +172,7 @@ pub struct DeviceMetadata {
 }
 
 /// Resolves parsed recovery identifiers into user-facing device metadata.
-pub trait DeviceMetadataResolver {
+pub trait DeviceMetadataResolver: Sync {
     fn resolve(&self, info: &RecoveryDeviceInfo) -> Option<DeviceMetadata>;
 }
 
@@ -378,18 +383,20 @@ impl Stream for RecoveryDeviceWatch<'_> {
 }
 
 /// List currently connected Apple recovery-family USB devices.
-pub fn list_recovery_devices() -> Result<Vec<RecoveryDevice>> {
-    list_recovery_devices_with_optional_metadata(None)
+pub fn list_recovery_devices() -> impl MaybeFuture<Output = Result<Vec<RecoveryDevice>>> {
+    Blocking::new(|| list_recovery_devices_with_optional_metadata_blocking(None))
 }
 
 /// List currently connected Apple recovery-family USB devices with metadata.
 pub fn list_recovery_devices_with_metadata(
     metadata_resolver: &dyn DeviceMetadataResolver,
-) -> Result<Vec<RecoveryDevice>> {
-    list_recovery_devices_with_optional_metadata(Some(metadata_resolver))
+) -> impl MaybeFuture<Output = Result<Vec<RecoveryDevice>>> + '_ {
+    Ready(list_recovery_devices_with_optional_metadata_blocking(Some(
+        metadata_resolver,
+    )))
 }
 
-fn list_recovery_devices_with_optional_metadata(
+fn list_recovery_devices_with_optional_metadata_blocking(
     metadata_resolver: Option<&dyn DeviceMetadataResolver>,
 ) -> Result<Vec<RecoveryDevice>> {
     let devices = nusb::list_devices().wait()?;
@@ -408,22 +415,24 @@ fn list_recovery_devices_with_optional_metadata(
 ///
 /// The watch is created before the initial device list is seeded, matching
 /// nusb's recommended pattern for avoiding missed connect events.
-pub fn watch_recovery_devices() -> Result<RecoveryDeviceWatch<'static>> {
-    watch_recovery_devices_with_optional_metadata(None)
+pub fn watch_recovery_devices() -> impl MaybeFuture<Output = Result<RecoveryDeviceWatch<'static>>> {
+    Blocking::new(|| watch_recovery_devices_with_optional_metadata_blocking(None))
 }
 
 /// Watch recovery-family device connect/disconnect events with metadata.
 pub fn watch_recovery_devices_with_metadata(
     metadata_resolver: &dyn DeviceMetadataResolver,
-) -> Result<RecoveryDeviceWatch<'_>> {
-    watch_recovery_devices_with_optional_metadata(Some(metadata_resolver))
+) -> impl MaybeFuture<Output = Result<RecoveryDeviceWatch<'_>>> + '_ {
+    Ready(watch_recovery_devices_with_optional_metadata_blocking(
+        Some(metadata_resolver),
+    ))
 }
 
-fn watch_recovery_devices_with_optional_metadata(
+fn watch_recovery_devices_with_optional_metadata_blocking(
     metadata_resolver: Option<&dyn DeviceMetadataResolver>,
 ) -> Result<RecoveryDeviceWatch<'_>> {
     let watch = nusb::watch_devices()?;
-    let devices = list_recovery_devices_with_optional_metadata(metadata_resolver)?;
+    let devices = list_recovery_devices_with_optional_metadata_blocking(metadata_resolver)?;
     let known_ids = devices.iter().map(|device| device.id).collect();
     let pending = devices
         .into_iter()
@@ -439,8 +448,11 @@ fn watch_recovery_devices_with_optional_metadata(
 }
 
 /// Open the recovery device with the matching ECID, retrying enumeration.
-pub fn open_by_ecid(ecid: u64, attempts: usize) -> Result<RecoveryClient> {
-    open_by_ecid_with_optional_metadata(ecid, attempts, None)
+pub fn open_by_ecid(
+    ecid: u64,
+    attempts: usize,
+) -> impl MaybeFuture<Output = Result<RecoveryClient>> {
+    Blocking::new(move || open_by_ecid_with_optional_metadata_blocking(ecid, attempts, None))
 }
 
 /// Open the recovery device with the matching ECID and optional metadata.
@@ -448,11 +460,15 @@ pub fn open_by_ecid_with_metadata(
     ecid: u64,
     attempts: usize,
     metadata_resolver: &dyn DeviceMetadataResolver,
-) -> Result<RecoveryClient> {
-    open_by_ecid_with_optional_metadata(ecid, attempts, Some(metadata_resolver))
+) -> impl MaybeFuture<Output = Result<RecoveryClient>> + '_ {
+    Ready(open_by_ecid_with_optional_metadata_blocking(
+        ecid,
+        attempts,
+        Some(metadata_resolver),
+    ))
 }
 
-fn open_by_ecid_with_optional_metadata(
+fn open_by_ecid_with_optional_metadata_blocking(
     ecid: u64,
     attempts: usize,
     metadata_resolver: Option<&dyn DeviceMetadataResolver>,
@@ -482,8 +498,13 @@ fn open_by_ecid_with_optional_metadata(
 }
 
 /// Open and summarize a recovery device by ECID.
-pub fn init_recovery_device(ecid: u64, attempts: usize) -> Result<InitializedRecoveryDevice> {
-    init_recovery_device_with_optional_metadata(ecid, attempts, None)
+pub fn init_recovery_device(
+    ecid: u64,
+    attempts: usize,
+) -> impl MaybeFuture<Output = Result<InitializedRecoveryDevice>> {
+    Blocking::new(move || {
+        init_recovery_device_with_optional_metadata_blocking(ecid, attempts, None)
+    })
 }
 
 /// Open and summarize a recovery device by ECID with optional metadata.
@@ -491,22 +512,33 @@ pub fn init_recovery_device_with_metadata(
     ecid: u64,
     attempts: usize,
     metadata_resolver: &dyn DeviceMetadataResolver,
-) -> Result<InitializedRecoveryDevice> {
-    init_recovery_device_with_optional_metadata(ecid, attempts, Some(metadata_resolver))
+) -> impl MaybeFuture<Output = Result<InitializedRecoveryDevice>> + '_ {
+    Ready(init_recovery_device_with_optional_metadata_blocking(
+        ecid,
+        attempts,
+        Some(metadata_resolver),
+    ))
 }
 
 /// Open a recovery device by ECID, set `auto-boot=true`, save env, and reboot.
-pub fn set_auto_boot_and_reboot(ecid: u64, attempts: usize) -> Result<()> {
-    let client = open_by_ecid(ecid, attempts)?;
+pub fn set_auto_boot_and_reboot(
+    ecid: u64,
+    attempts: usize,
+) -> impl MaybeFuture<Output = Result<()>> {
+    Blocking::new(move || set_auto_boot_and_reboot_blocking(ecid, attempts))
+}
+
+fn set_auto_boot_and_reboot_blocking(ecid: u64, attempts: usize) -> Result<()> {
+    let client = open_by_ecid_with_optional_metadata_blocking(ecid, attempts, None)?;
     client.set_auto_boot_and_reboot()
 }
 
-fn init_recovery_device_with_optional_metadata(
+fn init_recovery_device_with_optional_metadata_blocking(
     ecid: u64,
     attempts: usize,
     metadata_resolver: Option<&dyn DeviceMetadataResolver>,
 ) -> Result<InitializedRecoveryDevice> {
-    let client = open_by_ecid_with_optional_metadata(ecid, attempts, metadata_resolver)?;
+    let client = open_by_ecid_with_optional_metadata_blocking(ecid, attempts, metadata_resolver)?;
     Ok(InitializedRecoveryDevice {
         mode: client.mode,
         metadata: client.metadata.clone(),

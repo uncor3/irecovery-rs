@@ -1,7 +1,7 @@
 use std::error::Error;
 
 use futures_lite::{StreamExt, future};
-use irecovery::{RecoveryDevice, RecoveryEvent};
+use irecovery::{MaybeFuture, RecoveryDevice, RecoveryEvent};
 
 #[cfg(feature = "bundled-db")]
 use irecovery::{db, watch_recovery_devices_with_metadata};
@@ -13,10 +13,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Watching Apple recovery-family USB devices. Press Ctrl-C to stop.");
 
     #[cfg(feature = "bundled-db")]
-    let mut events = Box::pin(watch_recovery_devices_with_metadata(&db::DEVICES)?);
+    let mut events = Box::pin(watch_recovery_devices_with_metadata(&db::DEVICES).wait()?);
 
     #[cfg(not(feature = "bundled-db"))]
-    let mut events = Box::pin(watch_recovery_devices()?);
+    let mut events = Box::pin(watch_recovery_devices().wait()?);
 
     loop {
         match future::block_on(events.as_mut().next()) {

@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use irecovery::{RecoveryDevice, open_by_ecid};
+use irecovery::{MaybeFuture, RecoveryDevice, open_by_ecid};
 
 #[cfg(feature = "bundled-db")]
 use irecovery::{db, list_recovery_devices_with_metadata};
@@ -12,10 +12,10 @@ const OPEN_ATTEMPTS: usize = 10;
 
 fn main() -> Result<(), Box<dyn Error>> {
     #[cfg(feature = "bundled-db")]
-    let devices = list_recovery_devices_with_metadata(&db::DEVICES)?;
+    let devices = list_recovery_devices_with_metadata(&db::DEVICES).wait()?;
 
     #[cfg(not(feature = "bundled-db"))]
-    let devices = list_recovery_devices()?;
+    let devices = list_recovery_devices().wait()?;
 
     let device = devices
         .iter()
@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     print_target(device);
 
-    let client = open_by_ecid(ecid, OPEN_ATTEMPTS)?;
+    let client = open_by_ecid(ecid, OPEN_ATTEMPTS).wait()?;
     client.set_auto_boot_and_reboot()?;
 
     println!("sent auto-boot=true, saveenv, and reboot");
