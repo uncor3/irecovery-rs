@@ -24,7 +24,8 @@ use maybe_future::{Ready, blocking::Blocking};
 use nusb::hotplug::{HotplugEvent, HotplugWatch};
 use nusb::transfer::{ControlOut, ControlType, Recipient};
 use nusb::{
-    Device, DeviceId, DeviceInfo as UsbDeviceInfo, Interface, MaybeFuture as NusbMaybeFuture,
+    Device, DeviceId as nusb_DeviceId, DeviceInfo as UsbDeviceInfo, Interface,
+    MaybeFuture as NusbMaybeFuture,
 };
 use thiserror::Error;
 
@@ -42,6 +43,9 @@ const ENGLISH_US: u16 = 0x0409;
 
 /// Crate-local result type.
 pub type Result<T> = std::result::Result<T, RecoveryError>;
+
+/// Re-export nusb's DeviceId type for convenience.
+pub type DeviceId = nusb_DeviceId;
 
 /// Errors returned by recovery discovery and opening operations.
 #[derive(Debug, Error)]
