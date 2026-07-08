@@ -49,6 +49,44 @@ reported as `Unknown Device`.
 
 ## Examples
 
+Watch recovery-device events without Tokio by blocking the current thread:
+
+```rust
+use std::error::Error;
+
+use futures_lite::{future, StreamExt};
+use irecovery::{MaybeFuture, RecoveryEvent};
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let mut events = Box::pin(irecovery::watch_recovery_devices().wait()?);
+
+    loop {
+        match future::block_on(events.as_mut().next()) {
+            Some(Ok(RecoveryEvent::Connected(device))) => {
+                println!(
+                    "recovery device connected: id={:?} mode={:?} ecid={:?} model={} name={}",
+                    device.id,
+                    device.mode,
+                    device.ecid,
+                    device.hardware_model().unwrap_or("unknown"),
+                    device.display_name(),
+                );
+            }
+            Some(Ok(RecoveryEvent::Disconnected(id))) => {
+                println!("recovery device disconnected: id={id:?}");
+            }
+            Some(Err(err)) => {
+                eprintln!("recovery device watch error: {err}");
+            }
+            None => break,
+        }
+    }
+
+    Ok(())
+}
+```
+
+
 Watch recovery-device events from a Tokio runtime:
 
 ```toml
@@ -104,43 +142,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 ```
 
-Watch recovery-device events without Tokio by blocking the current thread:
 
-```rust
-use std::error::Error;
-
-use futures_lite::{future, StreamExt};
-use irecovery::{MaybeFuture, RecoveryEvent};
-
-fn main() -> Result<(), Box<dyn Error>> {
-    let mut events = Box::pin(irecovery::watch_recovery_devices().wait()?);
-
-    loop {
-        match future::block_on(events.as_mut().next()) {
-            Some(Ok(RecoveryEvent::Connected(device))) => {
-                println!(
-                    "recovery device connected: id={:?} mode={:?} ecid={:?} model={} name={}",
-                    device.id,
-                    device.mode,
-                    device.ecid,
-                    device.hardware_model().unwrap_or("unknown"),
-                    device.display_name(),
-                );
-            }
-            Some(Ok(RecoveryEvent::Disconnected(id))) => {
-                println!("recovery device disconnected: id={id:?}");
-            }
-            Some(Err(err)) => {
-                eprintln!("recovery device watch error: {err}");
-            }
-            None => break,
-        }
-    }
-
-    Ok(())
-}
-```
-
+Open device by ECID and set an environment variable, save it, and reboot:
 
 ```rust
 use irecovery::{MaybeFuture, Result, open_by_ecid};
