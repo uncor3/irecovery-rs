@@ -639,10 +639,10 @@ fn read_iboot_descriptor_string(
     device: &Device,
     enumerated_serial: Option<&str>,
 ) -> Result<String> {
-    if let Some(serial) = enumerated_serial {
-        if looks_like_iboot_descriptor(serial) {
-            return Ok(serial.to_owned());
-        }
+    if let Some(serial) = enumerated_serial
+        && looks_like_iboot_descriptor(serial)
+    {
+        return Ok(serial.to_owned());
     }
 
     for index in [3, 1, 2] {
