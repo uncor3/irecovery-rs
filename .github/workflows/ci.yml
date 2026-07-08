@@ -7,13 +7,11 @@ on:
       - "**.rs"
       - "**.toml"
       - "**.yml"
-      - "**.md"
   pull_request:
     paths:
       - "**.rs"
       - "**.toml"
       - "**.yml"
-      - "**.md"
 
 jobs:
   test-linux:
